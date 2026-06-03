@@ -1,0 +1,23 @@
+{
+  "last_updated": "Sample data — will update automatically on next quarterly run",
+  "source": "Zillow Research — Median Asking Rent by ZIP",
+  "neighborhoods": [
+    { "name": "Bethesda",           "studio": 1950, "1br": 2600, "2br": 3500, "3br": 5200, "lat": 38.9847, "lng": -77.0947 },
+    { "name": "Burtonsville",       "studio": 1100, "1br": 1420, "2br": 1820, "3br": 2400, "lat": 39.1079, "lng": -76.9316 },
+    { "name": "Chevy Chase",        "studio": 1850, "1br": 2450, "2br": 3300, "3br": 4900, "lat": 38.9651, "lng": -77.0769 },
+    { "name": "Damascus",           "studio": 1050, "1br": 1350, "2br": 1750, "3br": 2300, "lat": 39.2751, "lng": -77.0416 },
+    { "name": "Gaithersburg",       "studio": 1200, "1br": 1550, "2br": 2050, "3br": 2750, "lat": 39.1434, "lng": -77.2014 },
+    { "name": "Garrett Park",       "studio": 1380, "1br": 1760, "2br": 2350, "3br": 3100, "lat": 39.0298, "lng": -77.0908 },
+    { "name": "Germantown",         "studio": 1150, "1br": 1500, "2br": 1950, "3br": 2600, "lat": 39.1732, "lng": -77.2717 },
+    { "name": "Kensington",         "studio": 1400, "1br": 1800, "2br": 2400, "3br": 3200, "lat": 39.0209, "lng": -77.0766 },
+    { "name": "Montgomery Village", "studio": 1100, "1br": 1450, "2br": 1850, "3br": 2450, "lat": 39.1618, "lng": -77.2000 },
+    { "name": "North Bethesda",     "studio": 1700, "1br": 2200, "2br": 2950, "3br": 4200, "lat": 39.0437, "lng": -77.1168 },
+    { "name": "Olney",              "studio": 1200, "1br": 1550, "2br": 2100, "3br": 2800, "lat": 39.1537, "lng": -77.0658 },
+    { "name": "Poolesville",        "studio": 1000, "1br": 1300, "2br": 1680, "3br": 2200, "lat": 39.1454, "lng": -77.4160 },
+    { "name": "Potomac",            "studio": 1800, "1br": 2400, "2br": 3200, "3br": 4700, "lat": 39.0176, "lng": -77.2085 },
+    { "name": "Rockville",          "studio": 1450, "1br": 1850, "2br": 2500, "3br": 3400, "lat": 39.0840, "lng": -77.1528 },
+    { "name": "Sandy Spring",       "studio": 1150, "1br": 1480, "2br": 1980, "3br": 2650, "lat": 39.1440, "lng": -77.0058 },
+    { "name": "Silver Spring",      "studio": 1500, "1br": 1950, "2br": 2600, "3br": 3600, "lat": 38.9954, "lng": -77.0311 },
+    { "name": "Takoma Park",        "studio": 1400, "1br": 1820, "2br": 2480, "3br": 3300, "lat": 38.9812, "lng": -77.0072 }
+  ]
+}
