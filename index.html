@@ -4,6 +4,8 @@
   <meta charset="UTF-8">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>Montgomery County Rental Prices</title>
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"/>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.js"></script>
   <style>
     *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
@@ -51,10 +53,8 @@
     .card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-lg); padding: 1rem 1.25rem; }
     .card-label { font-size: 12px; color: var(--muted); margin-bottom: 10px; }
 
-    .map-wrap { position: relative; width: 100%; height: 320px; background: var(--surface2); border-radius: var(--radius); overflow: hidden; }
-    #mapSvg { width: 100%; height: 100%; }
-    .map-tooltip { position: absolute; pointer-events: none; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 7px 10px; font-size: 12px; white-space: nowrap; opacity: 0; transition: opacity 0.1s; z-index: 10; }
-    .map-legend { display: flex; align-items: center; gap: 8px; margin-top: 8px; font-size: 11px; color: var(--muted); }
+    #map { width: 100%; height: 340px; border-radius: var(--radius); overflow: hidden; z-index: 0; }
+    .map-legend { display: flex; align-items: center; gap: 8px; margin-top: 10px; font-size: 11px; color: var(--muted); }
 
     .chart-legend { display: flex; gap: 12px; flex-wrap: wrap; font-size: 11px; color: var(--muted); margin-bottom: 8px; }
     .chart-legend span { display: flex; align-items: center; gap: 4px; }
@@ -81,6 +81,12 @@
       .tag-lo  { background: #173404; color: #C0DD97; }
       .tag-mid { background: #042C53; color: #B5D4F4; }
     }
+
+    .leaflet-popup-content-wrapper { border-radius: var(--radius) !important; box-shadow: 0 2px 12px rgba(0,0,0,0.15) !important; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif !important; }
+    .leaflet-popup-content { margin: 10px 14px !important; font-size: 13px !important; line-height: 1.5 !important; }
+    .popup-name { font-weight: 600; font-size: 14px; margin-bottom: 6px; }
+    .popup-row { display: flex; justify-content: space-between; gap: 16px; font-size: 12px; color: #555; }
+    .popup-val { font-weight: 500; color: #1a1c1e; }
 
     footer { text-align: center; padding: 2rem; font-size: 12px; color: var(--muted); }
     footer a { color: var(--muted); }
@@ -124,10 +130,8 @@
 
     <div class="two-col">
       <div class="card">
-        <p class="card-label" id="mapLabel">Map — bubble size = average rent · click to highlight</p>
-        <div class="map-wrap" id="mapWrap">
-          <svg id="mapSvg" role="img" aria-label="Bubble map of Montgomery County neighborhoods sized by rent"></svg>
-        </div>
+        <p class="card-label" id="mapLabel">Map — bubble size = average rent · click for details</p>
+        <div id="map"></div>
         <div class="map-legend">
           <span>Lower rent</span>
           <svg width="100" height="8" aria-hidden="true">
@@ -136,7 +140,6 @@
           </svg>
           <span>Higher rent</span>
         </div>
-        <div class="map-tooltip" id="mapTooltip"></div>
       </div>
 
       <div class="card">
@@ -167,29 +170,31 @@
 <footer>
   Data sourced from <a href="https://www.zillow.com/research/data/" target="_blank" rel="noopener">Zillow Research</a>
   · Updated automatically each quarter · Montgomery County, MD
+  · Map tiles © <a href="https://www.openstreetmap.org/copyright" target="_blank" rel="noopener">OpenStreetMap</a> contributors
 </footer>
 
 <script>
 const allKeys = ["studio","1br","2br","3br"];
 const bdLabel = { studio:"Studio","1br":"1 BR","2br":"2 BR","3br":"3 BR" };
 const COLORS  = { studio:"#3266ad","1br":"#1D9E75","2br":"#BA7517","3br":"#D85A30" };
+const blueRamp = ["#E6F1FB","#B5D4F4","#85B7EB","#378ADD","#185FA5","#0C447C","#042C53"];
 
 let DATA = [];
 let activeBd = "all", activeSort = "price-desc", activeStat = "avg";
 let selectedName = null, chartInstance = null;
+let leafletMap = null, circleMarkers = [];
 
-// ── Load data.json from same repo ────────────────────────────────────────────
 async function loadData() {
   try {
     const res = await fetch("data.json");
-    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    if (!res.ok) throw new Error("HTTP " + res.status);
     const json = await res.json();
     DATA = json.neighborhoods || [];
     if (!DATA.length) throw new Error("No neighborhoods in data.json");
-    document.getElementById("dataBadge").textContent =
-      json.last_updated ? `Data: ${json.last_updated}` : "Live data";
+    document.getElementById("dataBadge").textContent = json.last_updated ? "Data: " + json.last_updated : "Live data";
     document.getElementById("loadingState").style.display = "none";
     document.getElementById("dashboard").style.display = "block";
+    initMap();
     render();
   } catch (err) {
     document.getElementById("loadingState").style.display = "none";
@@ -198,30 +203,84 @@ async function loadData() {
   }
 }
 
-// ── Helpers ───────────────────────────────────────────────────────────────────
+function initMap() {
+  leafletMap = L.map("map", { zoomControl: true, scrollWheelZoom: false });
+  L.tileLayer("https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png", {
+    attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
+    maxZoom: 17
+  }).addTo(leafletMap);
+  leafletMap.setView([39.08, -77.15], 11);
+}
+
+function scaleColor(val, minV, maxV) {
+  const t = (val - minV) / (maxV - minV || 1);
+  return blueRamp[Math.min(Math.floor(t * 6) + 1, 6)];
+}
+
+function updateMap(rows) {
+  circleMarkers.forEach(m => leafletMap.removeLayer(m));
+  circleMarkers = [];
+
+  const withCoords = rows.filter(r => r.lat && r.lng);
+  if (!withCoords.length) return;
+
+  const sums = withCoords.map(r => r.summary);
+  const minS = Math.min(...sums), maxS = Math.max(...sums);
+  const scaleR = s => 10 + ((s - minS) / (maxS - minS || 1)) * 28;
+
+  withCoords.forEach(r => {
+    const color = scaleColor(r.summary, minS, maxS);
+    const isSelected = r.name === selectedName;
+    const circle = L.circleMarker([r.lat, r.lng], {
+      radius: Math.round(scaleR(r.summary)),
+      fillColor: color,
+      fillOpacity: isSelected ? 1 : 0.78,
+      color: isSelected ? "#ffffff" : color,
+      weight: isSelected ? 2.5 : 1,
+    }).addTo(leafletMap);
+
+    circle.bindPopup(`
+      <div class="popup-name">${r.name}</div>
+      <div class="popup-row"><span>Studio</span><span class="popup-val">${fmtUSD(r.studio)}</span></div>
+      <div class="popup-row"><span>1 BR</span><span class="popup-val">${fmtUSD(r["1br"])}</span></div>
+      <div class="popup-row"><span>2 BR</span><span class="popup-val">${fmtUSD(r["2br"])}</span></div>
+      <div class="popup-row"><span>3 BR</span><span class="popup-val">${fmtUSD(r["3br"])}</span></div>
+      <div class="popup-row" style="margin-top:6px;padding-top:6px;border-top:1px solid #eee">
+        <span>${statLabel()}</span><span class="popup-val">${fmtUSD(r.summary)}</span>
+      </div>
+    `);
+
+    circle.on("click", () => {
+      selectedName = selectedName === r.name ? null : r.name;
+      render();
+    });
+
+    circleMarkers.push(circle);
+  });
+}
+
 function getVal(row, k) { return row[k] || 0; }
 function getSummary(row, bd) {
-  if (!bd || bd === "all") return Math.round(allKeys.reduce((s,k)=>s+getVal(row,k),0)/allKeys.length);
+  if (!bd || bd === "all") return Math.round(allKeys.reduce((s,k) => s + getVal(row,k), 0) / allKeys.length);
   return getVal(row, bd);
 }
 function median(vals) {
-  const s = [...vals].sort((a,b)=>a-b), m = Math.floor(s.length/2);
+  const s = [...vals].sort((a,b) => a-b), m = Math.floor(s.length/2);
   return s.length%2 ? s[m] : Math.round((s[m-1]+s[m])/2);
 }
 function statLabel() { return activeStat === "med" ? "Median" : "Average"; }
 function fmtUSD(v) { return v ? "$" + Math.round(v).toLocaleString() : "—"; }
 function getSorted() {
   let rows = DATA.map(r => ({ ...r, summary: getSummary(r, activeBd) }));
-  if (activeSort === "price-desc") rows.sort((a,b)=>b.summary-a.summary);
-  else if (activeSort === "price-asc") rows.sort((a,b)=>a.summary-b.summary);
-  else rows.sort((a,b)=>a.name.localeCompare(b.name));
+  if (activeSort === "price-desc") rows.sort((a,b) => b.summary - a.summary);
+  else if (activeSort === "price-asc") rows.sort((a,b) => a.summary - b.summary);
+  else rows.sort((a,b) => a.name.localeCompare(b.name));
   return rows;
 }
 
-// ── Render ────────────────────────────────────────────────────────────────────
 function render() {
-  document.getElementById("mapLabel").textContent   = `Map — bubble size = ${statLabel().toLowerCase()} rent · click to highlight`;
-  document.getElementById("chartLabel").textContent = `${statLabel()} monthly rent by neighborhood`;
+  document.getElementById("mapLabel").textContent   = "Map — bubble size = " + statLabel().toLowerCase() + " rent · click for details";
+  document.getElementById("chartLabel").textContent = statLabel() + " monthly rent by neighborhood";
   const rows = getSorted();
   const countyVal = updateMetrics(rows);
   updateMap(rows);
@@ -230,10 +289,10 @@ function render() {
 }
 
 function updateMetrics(rows) {
-  const vals = rows.map(r=>r.summary).filter(Boolean);
-  const countyVal = activeStat === "med" ? median(vals) : Math.round(vals.reduce((a,b)=>a+b,0)/vals.length);
-  const maxRow = rows.reduce((a,b)=>a.summary>b.summary?a:b);
-  const minRow = rows.reduce((a,b)=>a.summary<b.summary?a:b);
+  const vals = rows.map(r => r.summary).filter(Boolean);
+  const countyVal = activeStat === "med" ? median(vals) : Math.round(vals.reduce((a,b) => a+b, 0) / vals.length);
+  const maxRow = rows.reduce((a,b) => a.summary > b.summary ? a : b);
+  const minRow = rows.reduce((a,b) => a.summary < b.summary ? a : b);
   document.getElementById("metricRow").innerHTML = `
     <div class="metric"><p class="metric-label">County ${statLabel().toLowerCase()}</p><p class="metric-value">${fmtUSD(countyVal)}</p><p class="metric-delta">per month</p></div>
     <div class="metric"><p class="metric-label">Most expensive</p><p class="metric-value">${fmtUSD(maxRow.summary)}</p><p class="metric-delta">${maxRow.name}</p></div>
@@ -242,104 +301,69 @@ function updateMetrics(rows) {
   return countyVal;
 }
 
-function updateMap(rows) {
-  const svg = document.getElementById("mapSvg");
-  const wrap = document.getElementById("mapWrap");
-  const W = wrap.clientWidth || 340, H = 320;
-  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);
-  const wc = rows.filter(r=>r.lat&&r.lng);
-  if (!wc.length) { svg.innerHTML=`<text x="${W/2}" y="${H/2}" text-anchor="middle" font-size="13" fill="#888" font-family="sans-serif">No coordinate data</text>`; return; }
-  const lats=wc.map(r=>r.lat), lngs=wc.map(r=>r.lng);
-  const pad=36, minLat=Math.min(...lats), maxLat=Math.max(...lats), minLng=Math.min(...lngs), maxLng=Math.max(...lngs);
-  const scX=lng=>pad+((lng-minLng)/(maxLng-minLng||1))*(W-pad*2);
-  const scY=lat=>H-pad-((lat-minLat)/(maxLat-minLat||1))*(H-pad*2);
-  const sums=wc.map(r=>r.summary), minS=Math.min(...sums), maxS=Math.max(...sums);
-  const scR=s=>6+((s-minS)/(maxS-minS||1))*18;
-  const blues=["#E6F1FB","#B5D4F4","#85B7EB","#378ADD","#185FA5","#0C447C","#042C53"];
-  const scC=s=>blues[Math.min(Math.floor(((s-minS)/(maxS-minS||1))*6)+1,6)];
-  const isDark=matchMedia("(prefers-color-scheme: dark)").matches;
-  const bg=isDark?"#1a1a1a":"#EEF3FA", bc=isDark?"rgba(255,255,255,0.08)":"rgba(50,102,173,0.15)", tc=isDark?"rgba(255,255,255,0.75)":"rgba(10,30,60,0.75)";
-  let html=`<rect width="${W}" height="${H}" fill="${bg}" rx="8"/>`;
-  wc.forEach(r=>{
-    const cx=Math.round(scX(r.lng)),cy=Math.round(scY(r.lat)),rad=Math.round(scR(r.summary)),isSel=r.name===selectedName;
-    html+=`<g class="map-dot" data-name="${r.name}" data-val="${r.summary}" data-cx="${cx}" data-cy="${cy}" style="cursor:pointer">
-      <circle cx="${cx}" cy="${cy}" r="${rad}" fill="${scC(r.summary)}" stroke="${isSel?"#fff":bc}" stroke-width="${isSel?2:1}" opacity="${isSel?1:0.85}"/>
-      ${isSel?`<circle cx="${cx}" cy="${cy}" r="${rad+4}" fill="none" stroke="${scC(r.summary)}" stroke-width="1.5" opacity="0.5"/>`:""}
-    </g>`;
-  });
-  wc.forEach(r=>{
-    const cx=Math.round(scX(r.lng)),cy=Math.round(scY(r.lat)),rad=Math.round(scR(r.summary));
-    html+=`<text x="${cx}" y="${cy-rad-4}" text-anchor="middle" font-size="9" fill="${tc}" font-family="sans-serif" pointer-events="none">${r.name.split(" ")[0]}</text>`;
-  });
-  svg.innerHTML=html;
-  const tooltip=document.getElementById("mapTooltip");
-  svg.querySelectorAll(".map-dot").forEach(dot=>{
-    dot.addEventListener("mouseenter",()=>{
-      tooltip.innerHTML=`<strong>${dot.dataset.name}</strong><br>${statLabel()}: ${fmtUSD(parseInt(dot.dataset.val))}`;
-      tooltip.style.opacity="1"; tooltip.style.left=(parseInt(dot.dataset.cx)+12)+"px"; tooltip.style.top=(parseInt(dot.dataset.cy)-10)+"px";
-    });
-    dot.addEventListener("mouseleave",()=>{ tooltip.style.opacity="0"; });
-    dot.addEventListener("click",()=>{ selectedName=selectedName===dot.dataset.name?null:dot.dataset.name; render(); });
-  });
-}
-
 function updateChart(rows) {
-  const isDark=matchMedia("(prefers-color-scheme: dark)").matches;
-  const gc=isDark?"rgba(255,255,255,0.07)":"rgba(0,0,0,0.05)", tc=isDark?"#888":"#999";
-  const labels=rows.map(r=>r.name);
+  const isDark = matchMedia("(prefers-color-scheme: dark)").matches;
+  const gc = isDark ? "rgba(255,255,255,0.07)" : "rgba(0,0,0,0.05)";
+  const tc = isDark ? "#888" : "#999";
+  const labels = rows.map(r => r.name);
   let datasets;
-  const leg=document.getElementById("chartLegend");
-  if (activeBd==="all") {
-    datasets=allKeys.map(k=>({ label:bdLabel[k],data:rows.map(r=>getVal(r,k)||0),backgroundColor:COLORS[k]+"bb",borderWidth:0,borderRadius:3 }));
-    leg.innerHTML=allKeys.map(k=>`<span><span class="legend-sq" style="background:${COLORS[k]}"></span>${bdLabel[k]}</span>`).join("");
+  const leg = document.getElementById("chartLegend");
+  if (activeBd === "all") {
+    datasets = allKeys.map(k => ({ label:bdLabel[k], data:rows.map(r => getVal(r,k)||0), backgroundColor:COLORS[k]+"bb", borderWidth:0, borderRadius:3 }));
+    leg.innerHTML = allKeys.map(k => `<span><span class="legend-sq" style="background:${COLORS[k]}"></span>${bdLabel[k]}</span>`).join("");
   } else {
-    datasets=[{ label:bdLabel[activeBd],data:rows.map(r=>r.summary),backgroundColor:COLORS[activeBd]+"cc",borderWidth:0,borderRadius:3 }];
-    leg.innerHTML=`<span><span class="legend-sq" style="background:${COLORS[activeBd]}"></span>${bdLabel[activeBd]}</span>`;
+    datasets = [{ label:bdLabel[activeBd], data:rows.map(r => r.summary), backgroundColor:COLORS[activeBd]+"cc", borderWidth:0, borderRadius:3 }];
+    leg.innerHTML = `<span><span class="legend-sq" style="background:${COLORS[activeBd]}"></span>${bdLabel[activeBd]}</span>`;
   }
-  const h=Math.max(300,rows.length*32+60);
-  document.getElementById("mainChart").parentElement.style.height=h+"px";
+  const h = Math.max(300, rows.length * 32 + 60);
+  document.getElementById("mainChart").parentElement.style.height = h + "px";
   if (chartInstance) chartInstance.destroy();
-  chartInstance=new Chart(document.getElementById("mainChart"),{
-    type:"bar",data:{labels,datasets},
-    options:{indexAxis:"y",responsive:true,maintainAspectRatio:false,
-      plugins:{legend:{display:false},tooltip:{callbacks:{label:c=>" "+fmtUSD(c.parsed.x)}}},
-      scales:{x:{grid:{color:gc},ticks:{color:tc,font:{size:10},callback:v=>"$"+(v/1000).toFixed(0)+"k",autoSkip:false}},y:{grid:{display:false},ticks:{color:tc,font:{size:10}}}}}
+  chartInstance = new Chart(document.getElementById("mainChart"), {
+    type:"bar", data:{ labels, datasets },
+    options:{ indexAxis:"y", responsive:true, maintainAspectRatio:false,
+      plugins:{ legend:{ display:false }, tooltip:{ callbacks:{ label: c => " " + fmtUSD(c.parsed.x) }}},
+      scales:{
+        x:{ grid:{ color:gc }, ticks:{ color:tc, font:{size:10}, callback: v => "$"+(v/1000).toFixed(0)+"k", autoSkip:false }},
+        y:{ grid:{ display:false }, ticks:{ color:tc, font:{size:10} }}
+      }
+    }
   });
 }
 
 function updateTable(rows, countyVal) {
-  const lbl=statLabel();
-  document.getElementById("thStat").textContent=`${lbl} (selected)`;
-  document.getElementById("thVs").textContent=`vs county ${lbl.toLowerCase()}`;
-  const maxS=Math.max(...rows.map(r=>r.summary));
-  document.getElementById("tableBody").innerHTML=rows.map(r=>{
-    const pct=countyVal?Math.round(((r.summary-countyVal)/countyVal)*100):0;
-    const tag=pct>10?`<span class="tag tag-hi">+${pct}%</span>`:pct<-10?`<span class="tag tag-lo">${pct}%</span>`:`<span class="tag tag-mid">${pct>0?"+":""}${pct}%</span>`;
-    const bp=maxS?Math.round((r.summary/maxS)*100):0;
-    return `<tr class="${r.name===selectedName?"selected":""}" data-name="${r.name}">
+  const lbl = statLabel();
+  document.getElementById("thStat").textContent = lbl + " (selected)";
+  document.getElementById("thVs").textContent   = "vs county " + lbl.toLowerCase();
+  const maxS = Math.max(...rows.map(r => r.summary));
+  document.getElementById("tableBody").innerHTML = rows.map(r => {
+    const pct = countyVal ? Math.round(((r.summary - countyVal) / countyVal) * 100) : 0;
+    const tag = pct > 10 ? `<span class="tag tag-hi">+${pct}%</span>`
+               : pct < -10 ? `<span class="tag tag-lo">${pct}%</span>`
+               : `<span class="tag tag-mid">${pct > 0 ? "+" : ""}${pct}%</span>`;
+    const bp = maxS ? Math.round((r.summary / maxS) * 100) : 0;
+    return `<tr class="${r.name === selectedName ? "selected" : ""}" data-name="${r.name}">
       <td style="font-weight:500">${r.name}</td>
       <td>${fmtUSD(r.studio)}</td><td>${fmtUSD(r["1br"])}</td><td>${fmtUSD(r["2br"])}</td><td>${fmtUSD(r["3br"])}</td>
       <td><div class="bar-wrap"><div class="bar-bg"><div class="bar-fill" style="width:${bp}%"></div></div><span style="min-width:60px;font-weight:500">${fmtUSD(r.summary)}</span></div></td>
       <td>${tag}</td>
     </tr>`;
   }).join("");
-  document.querySelectorAll("#tableBody tr").forEach(tr=>{
-    tr.addEventListener("click",()=>{ selectedName=selectedName===tr.dataset.name?null:tr.dataset.name; render(); });
+  document.querySelectorAll("#tableBody tr").forEach(tr => {
+    tr.addEventListener("click", () => { selectedName = selectedName === tr.dataset.name ? null : tr.dataset.name; render(); });
   });
 }
 
-// ── Controls ──────────────────────────────────────────────────────────────────
-document.getElementById("statSeg").addEventListener("click",e=>{
-  const b=e.target.closest(".seg-btn"); if(!b) return;
-  document.querySelectorAll(".seg-btn").forEach(x=>x.classList.remove("active"));
-  b.classList.add("active"); activeStat=b.dataset.stat; render();
+document.getElementById("statSeg").addEventListener("click", e => {
+  const b = e.target.closest(".seg-btn"); if (!b) return;
+  document.querySelectorAll(".seg-btn").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); activeStat = b.dataset.stat; render();
 });
-document.getElementById("bdPills").addEventListener("click",e=>{
-  const b=e.target.closest(".pill"); if(!b) return;
-  document.querySelectorAll(".pill").forEach(x=>x.classList.remove("active"));
-  b.classList.add("active"); activeBd=b.dataset.bd; render();
+document.getElementById("bdPills").addEventListener("click", e => {
+  const b = e.target.closest(".pill"); if (!b) return;
+  document.querySelectorAll(".pill").forEach(x => x.classList.remove("active"));
+  b.classList.add("active"); activeBd = b.dataset.bd; render();
 });
-document.getElementById("sortSel").addEventListener("change",e=>{ activeSort=e.target.value; render(); });
+document.getElementById("sortSel").addEventListener("change", e => { activeSort = e.target.value; render(); });
 
 loadData();
 </script>
