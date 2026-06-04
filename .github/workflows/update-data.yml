@@ -1,8 +1,8 @@
-name: Quarterly Rental Data Update
+name: Monthly Rental Data Update
 
 on:
   schedule:
-    # 8am UTC on Jan 1, Apr 1, Jul 1, Oct 1
+    # Runs on the 1st of every month at 8am UTC
     - cron: "0 8 1 * *"
   workflow_dispatch:
     # Also lets you trigger it manually from the GitHub Actions tab anytime
@@ -11,7 +11,7 @@ jobs:
   update-data:
     runs-on: ubuntu-latest
     permissions:
-      contents: write   # needed to commit data.json back to the repo
+      contents: write
 
     steps:
       - name: Check out repository
@@ -25,7 +25,7 @@ jobs:
       - name: Install dependencies
         run: pip install requests
 
-      - name: Fetch Zillow data and write data.json
+      - name: Run data update
         run: python update_data.py
 
       - name: Commit updated data.json
@@ -33,5 +33,5 @@ jobs:
           git config user.name  "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add data.json
-          git diff --cached --quiet || git commit -m "Quarterly data update $(date +'%Y-%m-%d')"
+          git diff --cached --quiet || git commit -m "Monthly data update $(date +'%Y-%m')"
           git push
