@@ -1,7 +1,7 @@
 {
   "last_updated": "2026-04",
   "hud_ratio_year": "FY2026",
-  "source": "Zillow ZORI ZIP-level (SA) + HUD FY2026 bedroom ratios (DC metro)",
+  "source": "Zillow ZORI ZIP-level seasonally adjusted + HUD FY2026 bedroom ratios (DC metro)",
   "neighborhoods": [
     {
       "name": "Bethesda",
