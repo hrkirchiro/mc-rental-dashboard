@@ -1,18 +1,50 @@
 """
 Montgomery County Rental Dashboard — Auto-Update Script
-Runs quarterly via GitHub Actions.
-Fetches Zillow Research CSVs, filters for Montgomery County MD ZIP codes,
-and writes the results to data.json only if valid data was found.
-If the fetch fails or returns no results, the existing data.json is kept untouched.
+Runs monthly via GitHub Actions.
+
+Data sources:
+  - Zillow ZORI ZIP-level CSV (seasonally adjusted) — monthly rent totals by ZIP
+  - HUD FY2026 bedroom ratios for Washington DC metro — studio/1BR/2BR/3BR breakdown
+
+Update schedule:
+  - Script runs automatically on the 1st of every month
+  - HUD bedroom ratios (4 numbers) should be updated once per year each October
+    when HUD releases new Fair Market Rents at huduser.gov/portal/datasets/fmr.html
 """
 
-import json
 import csv
-import requests
+import json
 import os
 import sys
+import requests
 from io import StringIO
-from datetime import date
+
+# ── Zillow ZORI ZIP-level file (seasonally adjusted) ─────────────────────────
+ZILLOW_URL = (
+    "https://files.zillowstatic.com/research/public_csvs/zori/"
+    "Zip_zori_uc_sfrcondomfr_sm_sa_month.csv"
+)
+
+ZILLOW_HEADERS = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Referer": "https://www.zillow.com/research/data/",
+}
+
+# ── HUD FY2026 bedroom ratios — Washington DC metro (DC-VA-MD-WV MSA) ────────
+# These are the official HUD bedroom size ratios relative to 2-bedroom rent.
+# Update these once per year each October when HUD releases new FMRs at:
+# https://www.huduser.gov/portal/datasets/fmr.html
+HUD_RATIOS = {
+    "studio": 0.74,   # studio  = 74% of 2BR rent
+    "1br":    0.88,   # 1BR     = 88% of 2BR rent
+    "2br":    1.00,   # 2BR     = base (100%)
+    "3br":    1.28,   # 3BR     = 128% of 2BR rent
+}
+HUD_RATIO_YEAR = "FY2026"
 
 # ── Montgomery County MD ZIP → Neighborhood ───────────────────────────────────
 ZIP_TO_NEIGHBORHOOD = {
@@ -26,24 +58,15 @@ ZIP_TO_NEIGHBORHOOD = {
     "20853": "Rockville",
     "20854": "Potomac",
     "20855": "Germantown",
-    "20860": "Sandy Spring",
-    "20861": "Burtonsville",
-    "20862": "Burtonsville",
     "20866": "Burtonsville",
-    "20868": "Burtonsville",
     "20871": "Germantown",
-    "20872": "Damascus",
     "20874": "Germantown",
     "20876": "Germantown",
     "20877": "Gaithersburg",
     "20878": "Gaithersburg",
     "20879": "Gaithersburg",
-    "20880": "Montgomery Village",
-    "20882": "Damascus",
     "20886": "Montgomery Village",
     "20895": "Kensington",
-    "20896": "Garrett Park",
-    "20899": "Gaithersburg",
     "20901": "Silver Spring",
     "20902": "Silver Spring",
     "20903": "Silver Spring",
@@ -52,12 +75,7 @@ ZIP_TO_NEIGHBORHOOD = {
     "20906": "Silver Spring",
     "20910": "Silver Spring",
     "20912": "Takoma Park",
-    "20837": "Poolesville",
     "20832": "Olney",
-    "20833": "Brookeville",
-    "20838": "Barnesville",
-    "20841": "Boyds",
-    "20842": "Dickerson",
 }
 
 # ── Lat/Lng for map display ───────────────────────────────────────────────────
@@ -72,87 +90,57 @@ COORDS = {
     "Gaithersburg":       [39.1434, -77.2014],
     "Germantown":         [39.1732, -77.2717],
     "Montgomery Village": [39.1618, -77.2000],
-    "Damascus":           [39.2751, -77.0416],
-    "Olney":              [39.1537, -77.0658],
-    "Takoma Park":        [38.9812, -77.0072],
     "Burtonsville":       [39.1079, -76.9316],
-    "Poolesville":        [39.1454, -77.4160],
-    "Sandy Spring":       [39.1440, -77.0058],
-    "Garrett Park":       [39.0298, -77.0908],
-    "Brookeville":        [39.1776, -77.0577],
+    "Olney":              [39.1537, -77.0658],
+    "Takoma Park":        [39.0120, -77.0072],
 }
 
-# ── Zillow CSV filenames — tries multiple known naming patterns ───────────────
-ZILLOW_CANDIDATES = {
-    "studio": [
-        "MedianAskingRent_Studio_MedianAskingRent.csv",
-        "MedianAskingRent_Studio.csv",
-    ],
-    "1br": [
-        "MedianAskingRent_OneBedroomMedianAskingRent.csv",
-        "MedianAskingRent_1Bedroom.csv",
-        "MedianAskingRent_OneBedroom.csv",
-    ],
-    "2br": [
-        "MedianAskingRent_TwoBedroomMedianAskingRent.csv",
-        "MedianAskingRent_2Bedroom.csv",
-        "MedianAskingRent_TwoBedroom.csv",
-    ],
-    "3br": [
-        "MedianAskingRent_ThreeBedroomMedianAskingRent.csv",
-        "MedianAskingRent_3Bedroom.csv",
-        "MedianAskingRent_ThreeBedroom.csv",
-    ],
-}
-ZILLOW_BASE = "https://files.zillowstatic.com/research/public_csvs/medianAskingRent"
-MIN_NEIGHBORHOODS = 5  # safety threshold — must find at least this many or we bail
+MIN_NEIGHBORHOODS = 5  # safety check — bail if fewer than this found
 
 
-def fetch_zillow(bd_key):
-    """Try each known filename until one works. Returns parsed CSV rows."""
-    for filename in ZILLOW_CANDIDATES[bd_key]:
-        url = f"{ZILLOW_BASE}/{filename}"
-        print(f"  Trying {url} ...")
-        try:
-            r = requests.get(url, timeout=30)
-            if r.status_code == 200 and len(r.text) > 100:
-                print(f"  Found: {filename}")
-                return list(csv.DictReader(StringIO(r.text)))
-        except requests.RequestException as e:
-            print(f"  Request error: {e}")
-    print(f"  WARNING: could not fetch any file for {bd_key}")
-    return []
+def fetch_zillow():
+    """Download the ZORI ZIP-level CSV from Zillow."""
+    print(f"Downloading Zillow ZORI data...")
+    print(f"  URL: {ZILLOW_URL}")
+    r = requests.get(ZILLOW_URL, headers=ZILLOW_HEADERS, timeout=60)
+    r.raise_for_status()
+    print(f"  Downloaded {len(r.content) // 1024} KB")
+    return list(csv.DictReader(StringIO(r.text)))
 
 
-def extract(rows):
-    """Return {neighborhood: [values]} and the latest date column label."""
-    if not rows:
-        return {}, ""
+def get_latest_date_col(rows):
+    """Find the most recent date column that has actual data."""
     date_cols = sorted(k for k in rows[0] if k[:4].isdigit())
-    if not date_cols:
-        return {}, ""
-    latest = date_cols[-1]
-    print(f"  Latest date column: {latest}")
+    for col in reversed(date_cols):
+        if any(r.get(col, "").strip() for r in rows[:200]):
+            return col
+    return date_cols[-1] if date_cols else None
+
+
+def extract_mc_data(rows, date_col):
+    """Filter to Montgomery County MD ZIPs and return {neighborhood: [values]}."""
     result = {}
     for row in rows:
         z = str(row.get("RegionName", "")).zfill(5)
-        if row.get("StateName") != "MD" or z not in ZIP_TO_NEIGHBORHOOD:
+        state  = row.get("State", "")
+        county = row.get("CountyName", "")
+        if state != "MD" or "Montgomery" not in county:
             continue
-        nbhd = ZIP_TO_NEIGHBORHOOD[z]
+        if z not in ZIP_TO_NEIGHBORHOOD:
+            continue
+        v = row.get(date_col, "").strip()
+        if not v:
+            continue
         try:
-            val = float(row[latest])
-            result.setdefault(nbhd, []).append(val)
-        except (ValueError, KeyError):
+            nbhd = ZIP_TO_NEIGHBORHOOD[z]
+            result.setdefault(nbhd, []).append(float(v))
+        except ValueError:
             continue
-    return result, latest
-
-
-def avg(vals):
-    return round(sum(vals) / len(vals)) if vals else None
+    return result
 
 
 def load_existing():
-    """Load the current data.json so we can fall back to it if needed."""
+    """Load current data.json as fallback if fetch fails."""
     if os.path.exists("data.json"):
         try:
             with open("data.json") as f:
@@ -163,61 +151,74 @@ def load_existing():
 
 
 def main():
-    print("── Montgomery County Rental Dashboard: Data Update ──\n")
+    print("── Montgomery County Rental Dashboard: Monthly Data Update ──")
+    print(f"   Using HUD {HUD_RATIO_YEAR} bedroom ratios for DC metro\n")
 
     existing = load_existing()
-    all_data = {}
-    latest_date = ""
-    fetch_errors = 0
 
-    for bd_key in ["studio", "1br", "2br", "3br"]:
-        print(f"Fetching {bd_key}...")
-        raw = fetch_zillow(bd_key)
-        if not raw:
-            fetch_errors += 1
-            print(f"  Skipping {bd_key} — no data returned.\n")
-            continue
-        nbhd_vals, latest_date = extract(raw)
-        for nbhd, vals in nbhd_vals.items():
-            all_data.setdefault(nbhd, {})[bd_key] = avg(vals)
-        print(f"  {len(nbhd_vals)} neighborhoods found.\n")
-
-    total_neighborhoods = len(all_data)
-    print(f"Total neighborhoods found: {total_neighborhoods}")
-
-    # ── Safety check — only write if we got meaningful data ──────────────────
-    if total_neighborhoods < MIN_NEIGHBORHOODS:
-        print(f"\nSAFETY CHECK FAILED: only found {total_neighborhoods} neighborhoods "
-              f"(minimum is {MIN_NEIGHBORHOODS}).")
+    # ── Fetch ─────────────────────────────────────────────────────────────────
+    try:
+        rows = fetch_zillow()
+    except Exception as e:
+        print(f"\nFETCH FAILED: {e}")
         if existing:
-            print("Keeping existing data.json untouched — no changes written.")
-            print("The website will continue showing the previous data.")
-        else:
-            print("No existing data.json found either. Website will show an error until data is available.")
-        sys.exit(1)  # exit with error so GitHub Actions marks the run as failed (visible warning)
+            print("Keeping existing data.json untouched — website unchanged.")
+        sys.exit(1)
 
-    # ── Build and write output ────────────────────────────────────────────────
+    if not rows:
+        print("ERROR: No rows returned from Zillow.")
+        sys.exit(1)
+
+    # ── Find latest date ───────────────────────────────────────────────────────
+    date_col = get_latest_date_col(rows)
+    if not date_col:
+        print("ERROR: No date columns found.")
+        sys.exit(1)
+    print(f"Most recent data: {date_col[:7]}\n")
+
+    # ── Extract Montgomery County ──────────────────────────────────────────────
+    nbhd_vals = extract_mc_data(rows, date_col)
+    print(f"Neighborhoods found: {len(nbhd_vals)}")
+
+    # ── Safety check ──────────────────────────────────────────────────────────
+    if len(nbhd_vals) < MIN_NEIGHBORHOODS:
+        print(f"\nSAFETY CHECK FAILED: only {len(nbhd_vals)} neighborhoods found.")
+        if existing:
+            print("Keeping existing data.json untouched.")
+        sys.exit(1)
+
+    # ── Build output with HUD bedroom ratios ──────────────────────────────────
     neighborhoods = []
-    for name in sorted(all_data.keys()):
-        entry = {"name": name}
-        entry.update(all_data[name])
-        coords = COORDS.get(name)
-        if coords:
-            entry["lat"], entry["lng"] = coords
+    for name in sorted(nbhd_vals):
+        base_2br = round(sum(nbhd_vals[name]) / len(nbhd_vals[name]))
+        entry = {
+            "name":   name,
+            "studio": round(base_2br * HUD_RATIOS["studio"]),
+            "1br":    round(base_2br * HUD_RATIOS["1br"]),
+            "2br":    base_2br,
+            "3br":    round(base_2br * HUD_RATIOS["3br"]),
+        }
+        if name in COORDS:
+            entry["lat"], entry["lng"] = COORDS[name]
         neighborhoods.append(entry)
+        print(f"  {name}: studio=${entry['studio']:,}  "
+              f"1BR=${entry['1br']:,}  2BR=${entry['2br']:,}  3BR=${entry['3br']:,}")
 
     output = {
-        "last_updated": latest_date or str(date.today()),
-        "source": "Zillow Research — Median Asking Rent by ZIP",
+        "last_updated":  date_col[:7],
+        "hud_ratio_year": HUD_RATIO_YEAR,
+        "source": (
+            "Zillow ZORI ZIP-level seasonally adjusted + "
+            f"HUD {HUD_RATIO_YEAR} bedroom ratios (DC metro)"
+        ),
         "neighborhoods": neighborhoods,
     }
 
     with open("data.json", "w") as f:
         json.dump(output, f, indent=2)
 
-    print(f"\ndata.json written successfully — {len(neighborhoods)} neighborhoods.")
-    if fetch_errors:
-        print(f"Note: {fetch_errors} bedroom type(s) had fetch errors and were skipped.")
+    print(f"\ndata.json written — {len(neighborhoods)} neighborhoods "
+          f"as of {date_col[:7]}.")
 
 
 if __name__ == "__main__":
