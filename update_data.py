@@ -2,12 +2,15 @@
 Montgomery County Rental Dashboard — Auto-Update Script
 Runs quarterly via GitHub Actions.
 Fetches Zillow Research CSVs, filters for Montgomery County MD ZIP codes,
-and writes the results to data.json in the same repository.
+and writes the results to data.json only if valid data was found.
+If the fetch fails or returns no results, the existing data.json is kept untouched.
 """
 
 import json
 import csv
 import requests
+import os
+import sys
 from io import StringIO
 from datetime import date
 
@@ -79,22 +82,46 @@ COORDS = {
     "Brookeville":        [39.1776, -77.0577],
 }
 
-# ── Zillow CSV filenames per bedroom type ─────────────────────────────────────
-ZILLOW_FILES = {
-    "studio": "MedianAskingRent_Studio_MedianAskingRent.csv",
-    "1br":    "MedianAskingRent_OneBedroomMedianAskingRent.csv",
-    "2br":    "MedianAskingRent_TwoBedroomMedianAskingRent.csv",
-    "3br":    "MedianAskingRent_ThreeBedroomMedianAskingRent.csv",
+# ── Zillow CSV filenames — tries multiple known naming patterns ───────────────
+ZILLOW_CANDIDATES = {
+    "studio": [
+        "MedianAskingRent_Studio_MedianAskingRent.csv",
+        "MedianAskingRent_Studio.csv",
+    ],
+    "1br": [
+        "MedianAskingRent_OneBedroomMedianAskingRent.csv",
+        "MedianAskingRent_1Bedroom.csv",
+        "MedianAskingRent_OneBedroom.csv",
+    ],
+    "2br": [
+        "MedianAskingRent_TwoBedroomMedianAskingRent.csv",
+        "MedianAskingRent_2Bedroom.csv",
+        "MedianAskingRent_TwoBedroom.csv",
+    ],
+    "3br": [
+        "MedianAskingRent_ThreeBedroomMedianAskingRent.csv",
+        "MedianAskingRent_3Bedroom.csv",
+        "MedianAskingRent_ThreeBedroom.csv",
+    ],
 }
 ZILLOW_BASE = "https://files.zillowstatic.com/research/public_csvs/medianAskingRent"
+MIN_NEIGHBORHOODS = 5  # safety threshold — must find at least this many or we bail
 
 
 def fetch_zillow(bd_key):
-    url = f"{ZILLOW_BASE}/{ZILLOW_FILES[bd_key]}"
-    print(f"  Fetching {url}")
-    r = requests.get(url, timeout=30)
-    r.raise_for_status()
-    return list(csv.DictReader(StringIO(r.text)))
+    """Try each known filename until one works. Returns parsed CSV rows."""
+    for filename in ZILLOW_CANDIDATES[bd_key]:
+        url = f"{ZILLOW_BASE}/{filename}"
+        print(f"  Trying {url} ...")
+        try:
+            r = requests.get(url, timeout=30)
+            if r.status_code == 200 and len(r.text) > 100:
+                print(f"  Found: {filename}")
+                return list(csv.DictReader(StringIO(r.text)))
+        except requests.RequestException as e:
+            print(f"  Request error: {e}")
+    print(f"  WARNING: could not fetch any file for {bd_key}")
+    return []
 
 
 def extract(rows):
@@ -124,24 +151,52 @@ def avg(vals):
     return round(sum(vals) / len(vals)) if vals else None
 
 
+def load_existing():
+    """Load the current data.json so we can fall back to it if needed."""
+    if os.path.exists("data.json"):
+        try:
+            with open("data.json") as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return None
+
+
 def main():
     print("── Montgomery County Rental Dashboard: Data Update ──\n")
 
-    all_data = {}   # { neighborhood: { studio, 1br, 2br, 3br, lat, lng } }
+    existing = load_existing()
+    all_data = {}
     latest_date = ""
+    fetch_errors = 0
 
     for bd_key in ["studio", "1br", "2br", "3br"]:
         print(f"Fetching {bd_key}...")
-        try:
-            raw = fetch_zillow(bd_key)
-            nbhd_vals, latest_date = extract(raw)
-            for nbhd, vals in nbhd_vals.items():
-                all_data.setdefault(nbhd, {})[bd_key] = avg(vals)
-            print(f"  {len(nbhd_vals)} neighborhoods found.\n")
-        except Exception as e:
-            print(f"  Warning: could not fetch {bd_key} — {e}\n")
+        raw = fetch_zillow(bd_key)
+        if not raw:
+            fetch_errors += 1
+            print(f"  Skipping {bd_key} — no data returned.\n")
+            continue
+        nbhd_vals, latest_date = extract(raw)
+        for nbhd, vals in nbhd_vals.items():
+            all_data.setdefault(nbhd, {})[bd_key] = avg(vals)
+        print(f"  {len(nbhd_vals)} neighborhoods found.\n")
 
-    # Build output list, sorted by neighborhood name
+    total_neighborhoods = len(all_data)
+    print(f"Total neighborhoods found: {total_neighborhoods}")
+
+    # ── Safety check — only write if we got meaningful data ──────────────────
+    if total_neighborhoods < MIN_NEIGHBORHOODS:
+        print(f"\nSAFETY CHECK FAILED: only found {total_neighborhoods} neighborhoods "
+              f"(minimum is {MIN_NEIGHBORHOODS}).")
+        if existing:
+            print("Keeping existing data.json untouched — no changes written.")
+            print("The website will continue showing the previous data.")
+        else:
+            print("No existing data.json found either. Website will show an error until data is available.")
+        sys.exit(1)  # exit with error so GitHub Actions marks the run as failed (visible warning)
+
+    # ── Build and write output ────────────────────────────────────────────────
     neighborhoods = []
     for name in sorted(all_data.keys()):
         entry = {"name": name}
@@ -160,7 +215,9 @@ def main():
     with open("data.json", "w") as f:
         json.dump(output, f, indent=2)
 
-    print(f"data.json written — {len(neighborhoods)} neighborhoods.")
+    print(f"\ndata.json written successfully — {len(neighborhoods)} neighborhoods.")
+    if fetch_errors:
+        print(f"Note: {fetch_errors} bedroom type(s) had fetch errors and were skipped.")
 
 
 if __name__ == "__main__":
