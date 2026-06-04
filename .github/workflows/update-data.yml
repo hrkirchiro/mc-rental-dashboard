@@ -3,7 +3,7 @@ name: Quarterly Rental Data Update
 on:
   schedule:
     # 8am UTC on Jan 1, Apr 1, Jul 1, Oct 1
-    - cron: "0 8 1 1,4,7,10 *"
+    - cron: "0 8 1 * *"
   workflow_dispatch:
     # Also lets you trigger it manually from the GitHub Actions tab anytime
 
