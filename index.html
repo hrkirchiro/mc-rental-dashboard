@@ -625,11 +625,11 @@ function renderBedrooms() {
   bdCircles.forEach(m => bdMap.removeLayer(m));
   bdCircles = [];
   const wc = rows.filter(r=>r.lat&&r.lng);
-  const sums = wc.map(r=>r.summary), minS=Math.min(...sums), maxS=Math.max(...sums);
+  const sums = wc.map(r=>r.summary), minSum=Math.min(...sums), maxSum=Math.max(...sums);
   wc.forEach(r => {
-    const color = scaleColor(r.summary, minS, maxS);
+    const color = scaleColor(r.summary, minSum, maxSum);
     const isSel = r.name === selectedName;
-    const radius = 10 + ((r.summary-minS)/(maxS-minS||1))*28;
+    const radius = 10 + ((r.summary-minSum)/(maxSum-minSum||1))*28;
     const c = L.circleMarker([r.lat,r.lng], {
       radius: Math.round(radius), fillColor:color, fillOpacity:isSel?1:0.78,
       color:isSel?"#ffffff":color, weight:isSel?2.5:1
@@ -703,15 +703,15 @@ function renderBedrooms() {
 
 // Bedrooms controls
 document.getElementById("bdStatSeg").addEventListener("click", e => {
-  const b=e.target.closest(".seg-btn"); if(!b) return;
+  const btn=e.target.closest(".seg-btn"); if(!btn) return;
   document.querySelectorAll("#bdStatSeg .seg-btn").forEach(x=>x.classList.remove("active"));
-  b.classList.add("active"); bdStat=b.dataset.stat;
+  btn.classList.add("active"); bdStat=btn.dataset.stat;
   if(chartsInit.bedroomsMap) renderBedrooms();
 });
 document.getElementById("bdPills").addEventListener("click", e => {
-  const b=e.target.closest(".pill"); if(!b) return;
+  const btn=e.target.closest(".pill"); if(!btn) return;
   document.querySelectorAll("#bdPills .pill").forEach(x=>x.classList.remove("active"));
-  b.classList.add("active"); bdBed=b.dataset.bd;
+  btn.classList.add("active"); bdBed=btn.dataset.bd;
   if(chartsInit.bedroomsMap) renderBedrooms();
 });
 document.getElementById("bdSortSel").addEventListener("change", e => {
@@ -799,8 +799,8 @@ function initPsfTab() {
   const myByNbhd={};
   myUnitsArr.forEach(u=>{
     if(!u.sqft||!u.myRent||!u.neighborhood) return;
-    const k=["studio","1br","2br","3br"][u.beds]||"2br";
-    ((myByNbhd[u.neighborhood]=myByNbhd[u.neighborhood]||{})[k]=myByNbhd[u.neighborhood][k]||[]).push({name:u.name,psf:+(u.myRent/u.sqft).toFixed(2)});
+    const bedKey=["studio","1br","2br","3br"][u.beds]||"2br";
+    ((myByNbhd[u.neighborhood]=myByNbhd[u.neighborhood]||{})[bedKey]=myByNbhd[u.neighborhood][bedKey]||[]).push({name:u.name,psf:+(u.myRent/u.sqft).toFixed(2)});
   });
   const psfRows=[];
   DATA.forEach(r=>{ allKeys.forEach(k=>{ if(!r[k]) return; const psf=+(r[k]/PSF_SQFT[k]).toFixed(2); const my=((myByNbhd[r.name]||{})[k]||[]).map(u=>`${u.name}: $${u.psf}`).join(", ")||"—"; psfRows.push({nbhd:r.name,bed:k,rent:r[k],sqft:PSF_SQFT[k],psf,my}); }); });
@@ -841,10 +841,10 @@ function initZipTab() {
 
   const sorted=[...DATA].sort((a,b)=>getSummary(b,"all","avg")-getSummary(a,"all","avg"));
   document.getElementById("zipTableBody").innerHTML = sorted.map(r => {
-    const s=getSummary(r,"all","avg");
-    const pct=allAvg?Math.round(((s-allAvg)/allAvg)*100):0;
+    const rentVal=getSummary(r,"all","avg");
+    const pct=allAvg?Math.round(((rentVal-allAvg)/allAvg)*100):0;
     const tag=pct>10?`<span class="tag tag-hi">+${pct}%</span>`:pct<-10?`<span class="tag tag-lo">${pct}%</span>`:`<span class="tag tag-mid">${pct>0?"+":""}${pct}%</span>`;
-    return `<tr><td style="font-weight:500">${r.name}</td><td>${fmtUSD(s)}</td><td>${tag}</td></tr>`;
+    return `<tr><td style="font-weight:500">${r.name}</td><td>${fmtUSD(rentVal)}</td><td>${tag}</td></tr>`;
   }).join("");
 }
 
